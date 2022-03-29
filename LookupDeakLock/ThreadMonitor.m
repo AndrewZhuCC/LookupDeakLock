@@ -9,8 +9,9 @@
 #include <mach/mach.h>
 #import <pthread.h>
 #import <dlfcn.h>
-#import <os/lock.h>
 #include "KSThread.h"
+#import "TWMDeadLockCheckerTypes.h"
+
 @implementation ThreadMonitor
 
 //如何系统性治理 iOS 稳定性问题
@@ -103,12 +104,51 @@
                     [array addObject:@(thread_id)];
                     threadWaitDic[@(hold_lock_thread_id)] = array;
 
+                } else if (strcmp(info.dli_sname, "__ulock_wait") == 0) {
+                  // extern int __ulock_wait(uint32_t operation, void *addr, uint64_t value, uint32_t timeout);
+                  uintptr_t thirdParam = thirdParamRegister(&machineContext);
+                  mach_port_t mach_thread_id = (mach_port_t)(thirdParam | 0x3);
+                  pthread_t pthread = pthread_from_mach_thread_np(mach_thread_id);
+                  if (pthread) {
+                    uint64_t threadid;
+                    pthread_threadid_np(pthread, &threadid);
+                    
+                    NSMutableArray *array = threadWaitDic[@(threadid)];
+                    if (!array) {
+                      array = [NSMutableArray array];
+                    }
+                    [array addObject:@(thread_id)];
+                    threadWaitDic[@(threadid)] = array;
+                  }
+                } else if (strcmp(info.dli_sname, "__psynch_rw_wrlock") == 0 ||
+                           strcmp(info.dli_sname, "__psynch_rw_rdlock") == 0) {
+                  uintptr_t firstParam = firstParamRegister(&machineContext);
+                  struct pthread_rwlock_s* lockPtr = (struct pthread_rwlock_s *)firstParam;
+                  uint64_t* threadid_addr = (uint64_t *)(((uintptr_t)lockPtr->rw_tid + 0x7ul) & ~0x7ul);
+                  uint64_t threadid = *threadid_addr;
+                  NSMutableArray *array = threadWaitDic[@(threadid)];
+                  if (!array) {
+                    array = [NSMutableArray array];
+                  }
+                  [array addObject:@(thread_id)];
+                  threadWaitDic[@(threadid)] = array;
+                } else if (strcmp(info.dli_sname, "kevent_id") == 0) {
+                  uintptr_t firstParam = firstParamRegister(&machineContext);
+                  struct dispatch_queue_s *queue = (struct dispatch_queue_s*)firstParam;
+                  mach_port_t mach_thread_id = (mach_port_t)(queue->dq_state_lock | 0x3);
+                  pthread_t pthread = pthread_from_mach_thread_np(mach_thread_id);
+                  if (pthread) {
+                    uint64_t threadid;
+                    pthread_threadid_np(pthread, &threadid);
+                    
+                    NSMutableArray *array = threadWaitDic[@(threadid)];
+                    if (!array) {
+                      array = [NSMutableArray array];
+                    }
+                    [array addObject:@(thread_id)];
+                    threadWaitDic[@(threadid)] = array;
+                  }
                 }
-                //其他锁情况 TODO
-                //__psynch_rw_rdlock   ReadWrite lock
-                //__psynch_rw_wrlock   ReadWrite lock
-                //__ulock_wait         UnfariLock lock
-                //_kevent_id           GCD lock
             }
             //另外一种，特征有所区别，主线程的 CPU 占用一直很高 ，处于运行的状态，那么就应该怀疑主线程是否存在一些死循环等 CPU 密集型的任务。
             if ((run_state & TH_STATE_RUNNING) && cpu_usage > 800) {
@@ -147,7 +187,7 @@
         for (NSNumber *threadID in path) {
             NSLog(@"%@",threadDescDic[threadID]);
         }
-    }else {
+    } else {
         NSLog(@"未发现死锁");
     }
 }
@@ -168,61 +208,13 @@
     if (array.count) {
         for (NSNumber *next in array) {
             [self checkThreadID:next withThreadDescDic:threadDescDic threadWaitDic:threadWaitDic visited:visited path:path hasCircle:hasCircle];
+            if (*hasCircle) {
+                return;
+            }
         }
     }
     [visited removeObjectForKey:threadID];
 }
-
-
-typedef os_unfair_lock _pthread_lock;
-
-struct pthread_mutex_options_s {
-    uint32_t
-        protocol:2,
-        type:2,
-        pshared:2,
-        policy:3,
-        hold:2,
-        misalign:1,
-        notify:1,
-        mutex:1,
-        ulock:1,
-        unused:1,
-        lock_count:16;
-};
-
-typedef struct _pthread_mutex_ulock_s {
-    uint32_t uval;
-} *_pthread_mutex_ulock_t;
-
-struct pthread_mutex_s {
-    long sig;
-    _pthread_lock lock;
-    union {
-        uint32_t value;
-        struct pthread_mutex_options_s options;
-    } mtxopts;
-    int16_t prioceiling;
-    int16_t priority;
-#if defined(__LP64__)
-    uint32_t _pad;
-#endif
-    union {
-        struct {
-            uint32_t m_tid[2]; // thread id of thread that has mutex locked
-            uint32_t m_seq[2]; // mutex sequence id
-            uint32_t m_mis[2]; // for misaligned locks m_tid/m_seq will span into here
-        } psynch;
-        struct _pthread_mutex_ulock_s ulock;
-    };
-#if defined(__LP64__)
-    uint32_t _reserved[4];
-#else
-    uint32_t _reserved[1];
-#endif
-};
-
-
 
 
 uintptr_t firstParamRegister(mcontext_t const machineContext) {
@@ -232,6 +224,26 @@ uintptr_t firstParamRegister(mcontext_t const machineContext) {
     return machineContext->__ss.__x[0];
 #elif defined(__x86_64__)
     return machineContext->__ss.__rdi;
+#endif
+}
+
+uintptr_t secondParamRegister(mcontext_t const machineContext) {
+#if defined(__arm64__)
+    return machineContext->__ss.__x[1];
+#elif defined(__arm__)
+    return machineContext->__ss.__x[1];
+#elif defined(__x86_64__)
+    return machineContext->__ss.__rsi;
+#endif
+}
+
+uintptr_t thirdParamRegister(mcontext_t const machineContext) {
+#if defined(__arm64__)
+    return machineContext->__ss.__x[2];
+#elif defined(__arm__)
+    return machineContext->__ss.__x[2];
+#elif defined(__x86_64__)
+    return machineContext->__ss.__rdx;
 #endif
 }
 
@@ -246,6 +258,7 @@ thread_state_flavor_t smThreadStateByCPU(void) {
     return x86_THREAD_STATE32;
 #endif
 }
+
 mach_msg_type_number_t smThreadStateCountByCPU(void) {
 #if defined(__arm64__)
     return ARM_THREAD_STATE64_COUNT;
@@ -257,6 +270,7 @@ mach_msg_type_number_t smThreadStateCountByCPU(void) {
     return x86_THREAD_STATE32_COUNT;
 #endif
 }
+
 uintptr_t smMachInstructionPointerByCPU(mcontext_t const machineContext) {
     //Instruction pointer. Holds the program counter, the current instruction address.
 #if defined(__arm64__)

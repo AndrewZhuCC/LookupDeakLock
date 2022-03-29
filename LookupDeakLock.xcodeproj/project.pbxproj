@@ -35,6 +35,7 @@
 		927510E72757260600882685 /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		927512EE27573D5300882685 /* ThreadMonitor.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThreadMonitor.h; sourceTree = "<group>"; };
 		927512EF27573D5300882685 /* ThreadMonitor.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ThreadMonitor.m; sourceTree = "<group>"; };
+		CA08B7A927F2F5F300D86545 /* TWMDeadLockCheckerTypes.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TWMDeadLockCheckerTypes.h; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +76,7 @@
 				927510DC2757260100882685 /* ViewController.m */,
 				927512EE27573D5300882685 /* ThreadMonitor.h */,
 				927512EF27573D5300882685 /* ThreadMonitor.m */,
+				CA08B7A927F2F5F300D86545 /* TWMDeadLockCheckerTypes.h */,
 				926A4A862758768700F210A7 /* KSThread.c */,
 				926A4A852758768700F210A7 /* KSThread.h */,
 				927510DE2757260100882685 /* Main.storyboard */,

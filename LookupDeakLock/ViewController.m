@@ -7,6 +7,9 @@
 
 #import "ViewController.h"
 #import "ThreadMonitor.h"
+#import <os/lock.h>
+#import <pthread/pthread.h>
+#import <mach/mach_init.h>
 @interface ViewController ()
 /// <#name#>
 @property (nonatomic, assign) BOOL checkThreadCancel;
@@ -19,16 +22,22 @@
 /// <#name#>
 @property (nonatomic, strong) NSThread *holdLockBThread;
 /// <#name#>
-@property (nonatomic, strong) NSLock *lockB;
+//@property (nonatomic, strong) NSLock *lockB;
+@property (nonatomic, assign) pthread_rwlock_t lockB;
 /// <#name#>
 @property (nonatomic, strong) NSThread *holdLockCThread;
 /// <#name#>
-@property (nonatomic, strong) NSLock *lockC;
+//@property (nonatomic, strong) NSLock *lockC;
+
+@property (nonatomic, assign) os_unfair_lock lockC;
 
 /// <#name#>
 @property (nonatomic, strong) NSThread *holdlockSemaphoreThread;
 /// <#name#>
 @property (nonatomic, strong) dispatch_semaphore_t lockSemaphore;
+
+@property (nonatomic, strong) dispatch_queue_t current_queue;
+
 @end
 
 @implementation ViewController
@@ -39,11 +48,12 @@
     _lockA = [[NSLock alloc]init];
     _lockA.name = @"I am LockA";
     
-    _lockB = [[NSLock alloc]init];
-    _lockB.name = @"I am LockB";
+//    _lockB = [[NSLock alloc]init];
+//    _lockB.name = @"I am LockB";
+  pthread_rwlock_init(&_lockB, NULL);
     
-    _lockC = [[NSLock alloc]init];
-    _lockC.name = @"I am LockC";
+//  _lockC = OS_UNFAIR_LOCK_INIT;
+//    _lockC.name = @"I am LockC";
     
     _lockSemaphore = dispatch_semaphore_create(1);
     
@@ -59,7 +69,15 @@
     
     [self testWaitNSLock];
     
-
+  
+  _current_queue = dispatch_queue_create("gcd dead lock", DISPATCH_QUEUE_SERIAL);
+  
+  dispatch_async(_current_queue, ^{
+    NSLog(@"QThread want lockA");
+    [self.lockA lock];
+    NSLog(@"QThread hold lockA success");
+  });
+  
     
     
 //    _holdlockSemaphoreThread = [[NSThread alloc]initWithTarget:self selector:@selector(holdlockSemaphore) object:nil];
@@ -93,12 +111,12 @@
 
 - (void)holdlockSemaphore {
     dispatch_semaphore_wait(_lockSemaphore, DISPATCH_TIME_FOREVER);
-    NSLog(@"BThread hold lockSemaphore success");
+    NSLog(@"SThread hold lockSemaphore success");
     sleep(2);
     
-    NSLog(@"BThread want lockA");
+    NSLog(@"SThread want lockA");
     [_lockA lock];
-    NSLog(@"BThread hold lockA success");
+    NSLog(@"SThread hold lockA success");
 }
 
 - (void)holdLockA {
@@ -108,30 +126,53 @@
     sleep(2);
     
     NSLog(@"AThread want lockB");
-    [_lockB lock];
+  pthread_rwlock_rdlock(&_lockB);
+//    [_lockB lock];
     NSLog(@"AThread hold lockB success");
 }
 
 - (void)holdLockB {
-    [_lockB lock];
+//    [_lockB lock];
+  pthread_rwlock_wrlock(&_lockB);
     
     NSLog(@"BThread hold lockB success");
     sleep(2);
     
     NSLog(@"BThread want lockC");
-    [_lockC lock];
-    NSLog(@"BThread hold lockC success");
+//    [_lockC lock];
+  os_unfair_lock_lock(&_lockC);
+  NSLog(@"BThread hold lockC success");
 }
 
 - (void)holdLockC {
-    [_lockC lock];
+//  os_unfair_lock unfairlock = OS_UNFAIR_LOCK_INIT;
+//  os_unfair_lock_lock(&unfairlock);
+//  pthread_t pthread = pthread_from_mach_thread_np((mach_port_t)unfairlock._os_unfair_lock_opaque);
+//  uint64_t threadid;
+//  pthread_threadid_np(pthread, &threadid);
+//
+//  pthread_t pthreadself = pthread_self();
+//  mach_port_t machthreadself = mach_thread_self();
+//  unsigned int owner_id = *(unsigned int *)((char *)&unfairlock);
+  _lockC = OS_UNFAIR_LOCK_INIT;
+  os_unfair_lock_lock(&_lockC);
+//    [_lockC lock];
     
     NSLog(@"CThread hold lockC success");
     sleep(2);
     
-    NSLog(@"CThread want lockA");
-    [_lockA lock];
-    NSLog(@"CThread hold lockA success");
+//    NSLog(@"CThread want lockA");
+//    [_lockA lock];
+//    NSLog(@"CThread hold lockA success");
+  
+  NSLog(@"CThread want Q");
+  dispatch_sync(self.current_queue, ^{
+    NSLog(@"CThread hold Q success");
+  });
+  
+//    NSLog(@"CThread want lockS");
+//  dispatch_semaphore_wait(_lockSemaphore, DISPATCH_TIME_FOREVER);
+//  NSLog(@"CThread hold lockS success");
 }
 
 - (void)doManyWork {
